@@ -98,38 +98,55 @@ class Upsert
         setter_column_definitions.select { |cd| cd.name !~ CREATED_COL_REGEX }
       end
 
+      def returning_clause
+        if id_column_name
+          "RETURNING #{quoted_table_name}.#{id_column_name} INTO STRICT insert_id"
+        else
+          nil
+        end
+      end
+
       # the "canonical example" from http://www.postgresql.org/docs/9.1/static/plpgsql-control-structures.html#PLPGSQL-UPSERT-EXAMPLE
       # differentiate between selector and setter
       def create!
         Upsert.logger.info "[upsert] Creating or replacing database function #{name.inspect} on table #{table_name.inspect} for selector #{selector_keys.map(&:inspect).join(', ')} and setter #{setter_keys.map(&:inspect).join(', ')}"
         first_try = true
+
         connection.execute(%{
-          CREATE OR REPLACE FUNCTION #{name}(#{(selector_column_definitions.map(&:to_selector_arg) + setter_column_definitions.map(&:to_setter_arg) + hstore_delete_handlers.map(&:to_arg)).join(', ')}) RETURNS VOID AS
+          CREATE OR REPLACE FUNCTION #{name}(#{(selector_column_definitions.map(&:to_selector_arg) + setter_column_definitions.map(&:to_setter_arg) + hstore_delete_handlers.map(&:to_arg)).join(', ')})
+            RETURNS INTEGER AS
           $$
           DECLARE
             first_try INTEGER := 1;
+            insert_id INTEGER;
           BEGIN
             LOOP
               -- first try to update the key
-              UPDATE #{quoted_table_name} SET #{update_column_definitions.map(&:to_setter).join(', ')}
-                WHERE #{selector_column_definitions.map(&:to_selector).join(' AND ') };
-              IF found THEN
-                #{hstore_delete_handlers.map(&:to_pgsql).join(' ')}
-                RETURN;
-              END IF;
+              BEGIN
+                UPDATE #{quoted_table_name} SET #{update_column_definitions.map(&:to_setter).join(', ')}
+                  WHERE #{selector_column_definitions.map(&:to_selector).join(' AND ') }
+                  #{returning_clause};
+                IF found THEN
+                  #{hstore_delete_handlers.map(&:to_pgsql).join(' ')}
+                  RETURN insert_id;
+                END IF;
+              EXCEPTION WHEN NO_DATA_FOUND THEN
+                -- Do nothing, it's fine.
+              END;
               -- not there, so try to insert the key
               -- if someone else inserts the same key concurrently,
               -- we could get a unique-key failure
               BEGIN
-                INSERT INTO #{quoted_table_name}(#{setter_column_definitions.map(&:quoted_name).join(', ')}) VALUES (#{setter_column_definitions.map(&:to_setter_value).join(', ')});
+              INSERT INTO #{quoted_table_name}(#{setter_column_definitions.map(&:quoted_name).join(', ')}) VALUES (#{setter_column_definitions.map(&:to_setter_value).join(', ')})
+                #{returning_clause};
                 #{hstore_delete_handlers.map(&:to_pgsql).join(' ')}
-                RETURN;
+                RETURN insert_id;
               EXCEPTION WHEN unique_violation THEN
                 -- seamusabshere 9/20/12 only retry once
                 IF (first_try = 1) THEN
                   first_try := 0;
                 ELSE
-                  RETURN;
+                  RETURN NULL;
                 END IF;
                 -- Do nothing, and loop to try the UPDATE again.
               END;

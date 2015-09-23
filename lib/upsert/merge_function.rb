@@ -8,15 +8,17 @@ class Upsert
     NAME_PREFIX = "upsert#{Upsert::VERSION.gsub('.', '_')}"
 
     class << self
-      def unique_name(table_name, selector_keys, setter_keys)
+      def unique_name(table_name, selector_keys, setter_keys, id_column_name=nil)
         parts = [
           NAME_PREFIX,
           table_name,
           'SEL',
           selector_keys.join('_A_'),
           'SET',
-          setter_keys.join('_A_')
-        ].join('_')
+          setter_keys.join('_A_'),
+          'ID',
+          id_column_name
+        ].compact.join('_')
         if parts.length > MAX_NAME_LENGTH
           # maybe i should md5 instead
           crc32 = Zlib.crc32(parts).to_s
@@ -40,7 +42,7 @@ class Upsert
     end
 
     def name
-      @name ||= self.class.unique_name table_name, selector_keys, setter_keys
+      @name ||= self.class.unique_name table_name, selector_keys, setter_keys, id_column_name
     end
 
     def connection
@@ -57,6 +59,10 @@ class Upsert
 
     def column_definitions
       controller.column_definitions
+    end
+
+    def id_column_name
+      controller.id_column_name
     end
 
     private
