@@ -14,7 +14,7 @@ class Upsert
     # What logger to use.
     # @return [#info,#warn,#debug]
     attr_writer :logger
-    
+
     # The current logger
     # @return [#info,#warn,#debug]
     def logger
@@ -183,6 +183,7 @@ class Upsert
   # @param [String,Symbol] table_name The name of the table into which you will be upserting.
   # @param [Hash] options
   # @option options [TrueClass,FalseClass] :assume_function_exists (false) Assume the function has already been defined correctly by another process.
+  # @option options [String] :id_column_name (nil) The name of the id column to return from upserting
   def initialize(connection, table_name, options = {})
     @table_name = table_name.to_s
     metal = Upsert.metal connection
@@ -196,6 +197,7 @@ class Upsert
     @merge_function_class = MergeFunction.const_get adapter
     @merge_function_cache = {}
     @assume_function_exists = options.fetch :assume_function_exists, false
+    @id_column_name = options.fetch :id_column_name, nil
   end
 
   # Upsert a row given a selector and a setter.
@@ -215,15 +217,20 @@ class Upsert
   #   upsert.row({:name => 'Pierre'}, :breed => 'tabby')
   def row(selector, setter = {}, options = nil)
     row_object = Row.new(selector, setter, options)
-    merge_function(row_object).execute(row_object)
-    nil
+    result = merge_function(row_object).execute(row_object)
+    result = result.getvalue(0,0)
+    if result != nil
+      result.to_i
+    else
+      nil
+    end
   end
 
   # @private
   def clear_database_functions
     merge_function_class.clear connection
   end
-  
+
   def merge_function(row)
     cache_key = [row.selector.keys, row.setter.keys]
     @merge_function_cache[cache_key] ||= merge_function_class.new(self, row.selector.keys, row.setter.keys, assume_function_exists?)
@@ -237,5 +244,9 @@ class Upsert
   # @private
   def column_definitions
     @column_definitions ||= ColumnDefinition.const_get(flavor).all connection, table_name
+  end
+
+  def id_column_name
+    @id_column_name
   end
 end
